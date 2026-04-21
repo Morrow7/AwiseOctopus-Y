@@ -21,7 +21,8 @@ def get_sandbox():
             "code": {"type": "string", "description": "要执行的Python代码字符串"}
         },
         "required": ["code"]
-    }
+    },
+    requires_confirmation=True
 )
 def python_eval(code):
     print(f"\n    [系统提示] 执行Agent正在使用沙箱执行Python代码: \n{code}")

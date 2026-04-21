@@ -45,6 +45,27 @@ if "logs" not in st.session_state:
     # 存储当前任务的中间日志
     st.session_state.logs = []
 
+if "interaction_requests" not in st.session_state:
+    st.session_state.interaction_requests = []
+
+if "dag_running" not in st.session_state:
+    st.session_state.dag_running = False
+
+if "dag_results" not in st.session_state:
+    st.session_state.dag_results = None
+
+if "dag_status_data" not in st.session_state:
+    st.session_state.dag_status_data = None
+
+if "dag_prompt" not in st.session_state:
+    st.session_state.dag_prompt = None
+
+if "summary_text" not in st.session_state:
+    st.session_state.summary_text = ""
+
+if "summary_generator" not in st.session_state:
+    st.session_state.summary_generator = None
+
 # -----------------
 # 渲染历史消息
 # -----------------
@@ -126,77 +147,167 @@ if prompt := st.chat_input("Please enter a question or reply to the agent's requ
                     if isinstance(payload, list):
                         import json
                         import asyncio
+                        import threading
                         from models import DAGExecutor
                         
                         status_container.info("**任务规划完成，开始调度执行 DAG 图...**")
                         
-                        dag_container = st.empty()
-                        last_dot_ref = [""]
+                        st.session_state.dag_running = True
+                        st.session_state.dag_results = None
+                        st.session_state.dag_prompt = prompt
                         
                         def update_dag(status_data):
-                            dot = "digraph DAG {\n"
-                            dot += '  node [shape=box, style=filled, fontname="sans-serif"];\n'
-                            for tid, t in status_data["tasks"].items():
-                                if tid in status_data["completed"]:
-                                    color = "lightgreen"
-                                elif tid in status_data["running"]:
-                                    color = "yellow"
-                                else:
-                                    color = "lightgrey"
-                                
-                                # 截取前20个字符作为描述，替换掉双引号以防语法错误
-                                instruction_preview = t.get('instruction', '').replace('"', '\\"')[:20]
-                                label = f"{tid}\\n{instruction_preview}..."
-                                dot += f'  "{tid}" [fillcolor={color}, label="{label}"];\n'
-                            
-                            for tid, t in status_data["tasks"].items():
-                                for dep in t.get("dependencies", []):
-                                    dot += f'  "{dep}" -> "{tid}";\n'
-                            dot += "}\n"
-                            last_dot_ref[0] = dot
-                            dag_container.graphviz_chart(dot)
+                            st.session_state.dag_status_data = status_data
 
-                        # 初始化并执行 DAG
-                        executor = DAGExecutor(payload, client, MODEL, agent, on_status_change=update_dag)
-                        results = asyncio.run(executor.execute())
+                        def web_interaction_handler(tool_name, args):
+                            req = {
+                                "tool_name": tool_name,
+                                "args": args,
+                                "event": threading.Event(),
+                                "response": None
+                            }
+                            st.session_state.interaction_requests.append(req)
+                            req["event"].wait()
+                            return req["response"]
+
+                        def run_dag_thread(executor, app_session):
+                            # The executor runs in a new event loop
+                            try:
+                                loop = asyncio.new_event_loop()
+                                asyncio.set_event_loop(loop)
+                                results = loop.run_until_complete(executor.execute())
+                                app_session.dag_results = results
+                            except Exception as e:
+                                app_session.dag_results = f"DAG执行错误: {e}"
+                            finally:
+                                app_session.dag_running = False
+
+                        executor = DAGExecutor(payload, client, MODEL, agent, on_status_change=update_dag, interaction_handler=web_interaction_handler)
+                        t = threading.Thread(target=run_dag_thread, args=(executor, st.session_state))
+                        t.daemon = True
+                        t.start()
                         
-                        status_container.success("**DAG 任务全部执行完成！**")
-                        final_res_str = json.dumps(results, ensure_ascii=False, indent=2)
-                        
-                        # 展示执行结果的 JSON
-                        with st.expander("DAG 执行结果 (JSON 详情)", expanded=False):
-                            st.code(final_res_str, language="json")
-                            
-                        # 保存到 session_state 以便历史记录渲染
-                        st.session_state.messages.append({
-                            "role": "assistant", 
-                            "type": "dag_result", 
-                            "content": final_res_str, 
-                            "dot": last_dot_ref[0]
-                        })
-                        
-                        status_container.info("**正在生成最终总结报告...**")
-                        summary_container = st.empty()
-                        summary_text = ""
-                        # prompt为最开始的用户输入（在上方由st.chat_input获取）
-                        for chunk in agent.summarize_dag_results_stream(prompt, results):
-                            summary_text += chunk
-                            summary_container.markdown(summary_text)
-                            
-                        status_container.success("**所有任务已完成！**")
-                        st.session_state.messages.append({
-                            "role": "assistant", 
-                            "type": "final", 
-                            "content": summary_text
-                        })
+                        # 清理状态并触发 rerender 以显示 DAG 状态
+                        st.session_state.agent_gen = None
+                        st.rerun()
                     else:
                         status_container.success(f"**最终答案:**\n\n{payload}")
                         st.session_state.messages.append({"role": "assistant", "type": "final", "content": payload})
-                    
-                    # 清理状态
-                    st.session_state.agent_gen = None
-                    break
+                        st.session_state.agent_gen = None
+                        break
                     
         except StopIteration as e:
             # 正常情况下生成器会在 FINISHED 状态返回，如果意外结束也清理状态
             st.session_state.agent_gen = None
+
+# -----------------
+# 渲染后台 DAG 执行状态与交互
+# -----------------
+if st.session_state.dag_running or st.session_state.dag_results is not None:
+    # 渲染图表
+    if st.session_state.dag_status_data:
+        status_data = st.session_state.dag_status_data
+        dot = "digraph DAG {\n"
+        dot += '  node [shape=box, style=filled, fontname="sans-serif"];\n'
+        for tid, t in status_data["tasks"].items():
+            if tid in status_data["completed"]:
+                color = "lightgreen"
+            elif tid in status_data["running"]:
+                color = "yellow"
+            else:
+                color = "lightgrey"
+            instruction_preview = t.get('instruction', '').replace('"', '\\"')[:20]
+            label = f"{tid}\\n{instruction_preview}..."
+            dot += f'  "{tid}" [fillcolor={color}, label="{label}"];\n'
+        
+        for tid, t in status_data["tasks"].items():
+            for dep in t.get("dependencies", []):
+                dot += f'  "{dep}" -> "{tid}";\n'
+        dot += "}\n"
+        st.graphviz_chart(dot)
+
+    # 处理交互请求
+    if st.session_state.interaction_requests:
+        req = st.session_state.interaction_requests[0] # 取出第一个请求
+        st.warning(f"**Agent 请求确认高危操作:** `{req['tool_name']}`")
+        st.json(req['args'])
+        
+        with st.form(key=f"confirm_form_{id(req)}"):
+            user_decision = st.text_input("是否允许？(输入 'y' 允许，或者输入修改建议/拒绝原因)")
+            submitted = st.form_submit_button("提交决定")
+            if submitted:
+                req["response"] = user_decision
+                st.session_state.interaction_requests.pop(0)
+                req["event"].set()
+                st.rerun()
+
+    elif st.session_state.dag_running:
+        # 如果没有交互请求，并且还在运行，显示刷新按钮或自动刷新
+        import time
+        st.info("DAG 任务后台执行中...")
+        time.sleep(1.5)
+        st.rerun()
+
+    # 处理 DAG 执行完成
+    if not st.session_state.dag_running and st.session_state.dag_results is not None and not st.session_state.summary_generator:
+        import json
+        st.success("**DAG 任务全部执行完成！**")
+        final_res_str = json.dumps(st.session_state.dag_results, ensure_ascii=False, indent=2)
+        with st.expander("DAG 执行结果 (JSON 详情)", expanded=False):
+            st.code(final_res_str, language="json")
+        
+        # 存入消息历史
+        dot_str = ""
+        if st.session_state.dag_status_data:
+            # 重新生成 dot 存入历史
+            status_data = st.session_state.dag_status_data
+            dot_str = "digraph DAG {\n"
+            dot_str += '  node [shape=box, style=filled, fontname="sans-serif"];\n'
+            for tid, t in status_data["tasks"].items():
+                if tid in status_data["completed"]:
+                    color = "lightgreen"
+                elif tid in status_data["running"]:
+                    color = "yellow"
+                else:
+                    color = "lightgrey"
+                instruction_preview = t.get('instruction', '').replace('"', '\\"')[:20]
+                label = f"{tid}\\n{instruction_preview}..."
+                dot_str += f'  "{tid}" [fillcolor={color}, label="{label}"];\n'
+            for tid, t in status_data["tasks"].items():
+                for dep in t.get("dependencies", []):
+                    dot_str += f'  "{dep}" -> "{tid}";\n'
+            dot_str += "}\n"
+            
+        st.session_state.messages.append({
+            "role": "assistant", 
+            "type": "dag_result", 
+            "content": final_res_str, 
+            "dot": dot_str
+        })
+        
+        # 准备生成总结
+        agent = ThinkingAgent(client, MODEL)
+        st.session_state.summary_generator = agent.summarize_dag_results_stream(st.session_state.dag_prompt, st.session_state.dag_results)
+        st.session_state.summary_text = ""
+        st.rerun()
+
+    # 处理总结流式输出
+    if st.session_state.summary_generator is not None:
+        st.info("**正在生成最终总结报告...**")
+        try:
+            chunk = next(st.session_state.summary_generator)
+            st.session_state.summary_text += chunk
+            st.markdown(st.session_state.summary_text)
+            import time
+            time.sleep(0.1)
+            st.rerun()
+        except StopIteration:
+            st.success("**所有任务已完成！**")
+            st.session_state.messages.append({
+                "role": "assistant", 
+                "type": "final", 
+                "content": st.session_state.summary_text
+            })
+            st.session_state.summary_generator = None
+            st.session_state.dag_results = None # 清理状态，表示本次流程完全结束
+            st.rerun()

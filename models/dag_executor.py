@@ -4,11 +4,12 @@ from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
 from .execution_agent import ExecutionAgent
 
 class DAGExecutor:
-    def __init__(self, tasks, client, model, thinking_agent, on_status_change=None):
+    def __init__(self, tasks, client, model, thinking_agent, on_status_change=None, interaction_handler=None):
         self.client = client
         self.model = model
         self.thinking_agent = thinking_agent
         self.on_status_change = on_status_change
+        self.interaction_handler = interaction_handler
         
         # 记录所有的任务对象 {task_id: task_dict}
         self.all_tasks = {t['id']: t for t in tasks}
@@ -45,7 +46,7 @@ class DAGExecutor:
 
     async def _execute_task_wrapper(self, task_id, instruction):
         """包装 ExecutionAgent 的执行，以便作为 apscheduler 的 job 运行"""
-        worker = ExecutionAgent(self.client, self.model)
+        worker = ExecutionAgent(self.client, self.model, interaction_handler=self.interaction_handler)
         print(f"\n[DAG 执行器] 开始执行任务: {task_id}")
         result = await worker.async_run(instruction)
         return {"task_id": task_id, "result": result}

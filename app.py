@@ -21,6 +21,15 @@ client = OpenAI(
 )
 
 # -----------------
+# 交互处理函数
+# -----------------
+def cli_interaction_handler(tool_name, args):
+    print(f"\n[⚠️ 警告] Agent 准备执行高危操作 `{tool_name}`，参数为:")
+    print(json.dumps(args, indent=2, ensure_ascii=False))
+    user_reply = input("是否允许？(输入 'y' 允许，或者输入修改建议/拒绝原因): ")
+    return user_reply
+
+# -----------------
 # 主循环
 # -----------------
 if __name__ == "__main__":
@@ -42,7 +51,7 @@ if __name__ == "__main__":
             
             if isinstance(final_response, list):
                 print("\n[系统] 接收到 DAG 任务图，开始调度执行...")
-                executor = DAGExecutor(final_response, client, MODEL, manager)
+                executor = DAGExecutor(final_response, client, MODEL, manager, interaction_handler=cli_interaction_handler)
                 results = asyncio.run(executor.execute())
                 print(f"\n✅ DAG 最终执行结果（JSON）：\n{json.dumps(results, ensure_ascii=False, indent=2)}\n")
                 

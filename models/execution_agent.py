@@ -2,9 +2,10 @@ import json
 from .tools import registry
 
 class ExecutionAgent:
-    def __init__(self, client, model):
+    def __init__(self, client, model, interaction_handler=None):
         self.client = client
         self.model = model
+        self.interaction_handler = interaction_handler
         self.system_prompt = (
             "你是一个执行Agent（Worker）。你的任务是利用手头的技能工具，精准地完成思考Agent交给你的具体任务指令。\n"
             "遇到问题时，请自行分析并再次尝试。一旦你完成了任务，请直接用普通文本回答最终结果，不要返回额外的内容。\n"
@@ -33,7 +34,20 @@ class ExecutionAgent:
                     args = json.loads(tool_call.function.arguments)
                     yield f"    - [执行Agent 调用技能] {name}({args})"
                     
-                    result = registry.execute(name, args)
+                    skill_info = registry.get_skill_info(name)
+                    if skill_info and skill_info.get("requires_confirmation"):
+                        if self.interaction_handler:
+                            yield f"    - [执行Agent 暂停] 等待用户确认高危操作 {name}..."
+                            user_reply = self.interaction_handler(name, args)
+                            if str(user_reply).strip().lower() in ['y', 'yes', '允许', 'ok']:
+                                result = registry.execute(name, args)
+                            else:
+                                result = f"用户拒绝了该操作，用户的建议/原因是: {user_reply}"
+                        else:
+                            yield f"    - [执行Agent 警告] 高危操作 {name} 需要用户确认，但未配置交互处理器，默认拒绝执行。"
+                            result = "操作被拒绝：未配置用户确认交互机制。"
+                    else:
+                        result = registry.execute(name, args)
                     
                     yield f"    - [执行Agent 技能返回结果] {result}"
                     messages.append({
