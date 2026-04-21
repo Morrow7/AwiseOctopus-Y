@@ -3,10 +3,11 @@ import sys
 import os
 import base64
 import time
+import atexit
 
-class TrueLocalSandbox:
+class AOLocalSandbox:
     """
-    A true local sandbox that utilizes Docker if available, otherwise falls back
+    A mix local sandbox that utilizes Docker if available, otherwise falls back
     to a local subprocess. It communicates with a runner script (`runner.py`) 
     via base64-encoded strings over stdin/stdout to persist state across executions
     and safely handle multi-line code/output.
@@ -29,6 +30,9 @@ class TrueLocalSandbox:
 
         self.model = "docker-sandbox" if self.use_docker else "subprocess-sandbox"
         self._start_process()
+        
+        # 注册退出时清理
+        atexit.register(self.close)
 
     def _start_process(self):
         if self.use_docker:

@@ -1,10 +1,16 @@
-import io
-import contextlib
 import traceback
 from .registry import registry
+from models.sandbox.ao_local_sandbox import AOLocalSandbox
 
-# 维护一个全局的环境，使得多次调用python_eval能够共享变量
-_python_global_env = {}
+# 初始化全局沙箱单例，复用上下文状态
+_sandbox_instance = None
+
+def get_sandbox():
+    global _sandbox_instance
+    if _sandbox_instance is None:
+        # 在首次调用时实例化沙箱
+        _sandbox_instance = AOLocalSandbox()
+    return _sandbox_instance
 
 @registry.register(
     name="python_eval",
@@ -18,23 +24,10 @@ _python_global_env = {}
     }
 )
 def python_eval(code):
-    print(f"\n    [系统提示] 执行Agent正在执行Python代码: \n{code}")
-    output = io.StringIO()
-    error_output = io.StringIO()
-    
+    print(f"\n    [系统提示] 执行Agent正在使用沙箱执行Python代码: \n{code}")
     try:
-        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(error_output):
-            exec(code, _python_global_env)
-        
-        out_str = output.getvalue()
-        err_str = error_output.getvalue()
-        
-        result = ""
-        if out_str:
-            result += out_str
-        if err_str:
-            result += f"\n[Error Output]:\n{err_str}"
-            
-        return result.strip() or "代码执行成功，无输出。"
+        sandbox = get_sandbox()
+        result = sandbox.execute_code(code)
+        return result
     except Exception:
-        return f"代码执行发生异常:\n{traceback.format_exc()}"
+        return f"代码执行发送给沙箱时发生异常:\n{traceback.format_exc()}"
