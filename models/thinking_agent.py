@@ -301,23 +301,25 @@ class ThinkingAgent:
             }
         ]
         
+        self.messages = [{"role": "system", "content": self.system_prompt}]
+        
     def run_stream(self, user_request):
         yield ("RUNNING", "\n=== [思考Agent 启动] 开始分析任务 ===")
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": user_request}
-        ]
+        self.messages.append({"role": "user", "content": user_request})
         
         while True:
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=messages,
+                messages=self.messages,
                 tools=self.thinking_tools_schema
             )
             msg = response.choices[0].message
-            messages.append(msg)
+            self.messages.append(msg)
             
             if msg.tool_calls:
+                final_return_payload = None
+                final_return_status = None
+                
                 for tool_call in msg.tool_calls:
                     name = tool_call.function.name
                     args = json.loads(tool_call.function.arguments)
@@ -327,7 +329,7 @@ class ThinkingAgent:
                         yield ("RUNNING", f"\n[思考Agent 检索技能] 关键词: {keyword}")
                         skill_content = _search_skill(keyword)
                         
-                        messages.append({
+                        self.messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call.id,
                             "name": name,
@@ -347,7 +349,7 @@ class ThinkingAgent:
                         except StopIteration as e:
                             result = e.value
                         
-                        messages.append({
+                        self.messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call.id,
                             "name": name,
@@ -359,7 +361,7 @@ class ThinkingAgent:
                         
                         user_reply = yield ("ASK_USER", question)
                         
-                        messages.append({
+                        self.messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call.id,
                             "name": name,
@@ -376,7 +378,7 @@ class ThinkingAgent:
                         
                         if not is_valid:
                             yield ("RUNNING", f"\n[校验失败] DAG图存在错误: {error_msg}")
-                            messages.append({
+                            self.messages.append({
                                 "role": "tool",
                                 "tool_call_id": tool_call.id,
                                 "name": name,
@@ -387,21 +389,57 @@ class ThinkingAgent:
                         yield ("RUNNING", f"\n=== [思考Agent 规划完成] 输出DAG任务图: 共 {len(tasks)} 个任务 ===")
                         dag_json = json.dumps(tasks, ensure_ascii=False, indent=2)
                         yield ("RUNNING", f"\n[DAG 任务图详情]:\n{dag_json}")
-                        yield ("FINISHED", tasks)
-                        return tasks
+                        
+                        self.messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": name,
+                            "content": "DAG图已生成并提交执行"
+                        })
+                        
+                        final_return_status = "FINISHED"
+                        final_return_payload = tasks
                     elif name == "continue_task":
                         yield ("RUNNING", "\n=== [思考Agent 复盘完成] 维持原DAG计划，继续执行 ===")
-                        yield ("FINISHED", "CONTINUE")
-                        return "CONTINUE"
+                        
+                        self.messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": name,
+                            "content": "维持原计划继续执行"
+                        })
+                        
+                        final_return_status = "FINISHED"
+                        final_return_payload = "CONTINUE"
                     elif name == "finish_task":
                         final_answer = args.get("final_answer", "")
                         yield ("RUNNING", "\n=== [思考Agent 完成] 所有任务已完成 ===")
-                        yield ("FINISHED", final_answer)
-                        return final_answer
+                        
+                        self.messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": name,
+                            "content": f"任务已完成，最终回复: {final_answer}"
+                        })
+                        
+                        final_return_status = "FINISHED"
+                        final_return_payload = final_answer
+                    else:
+                        yield ("RUNNING", f"\n[思考Agent 错误] 调用了未知工具: {name}")
+                        self.messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": name,
+                            "content": f"Error: Unknown tool '{name}'."
+                        })
+                        
+                if final_return_status:
+                    yield (final_return_status, final_return_payload)
+                    return final_return_payload
             else:
                 if msg.content:
                     yield ("RUNNING", f"\n[思考Agent 自言自语] {msg.content}")
-                    messages.append({"role": "user", "content": "请使用工具 execute_subtask 委派任务，或使用 finish_task 结束。"})
+                    self.messages.append({"role": "user", "content": "请使用工具 execute_subtask 委派任务，或使用 finish_task 结束。"})
 
     def run(self, user_request):
         gen = self.run_stream(user_request)
@@ -452,6 +490,16 @@ class ThinkingAgent:
             messages=messages,
             stream=True
         )
+        
+        summary_text = ""
         for chunk in response:
             if chunk.choices and chunk.choices[0].delta.content is not None:
-                yield chunk.choices[0].delta.content
+                content = chunk.choices[0].delta.content
+                summary_text += content
+                yield content
+                
+        # 注入总结结果到思考 Agent 的上下文中
+        self.messages.append({
+            "role": "user",
+            "content": f"系统通知：上一个任务的DAG执行结果总结如下：\n{summary_text}\n请在后续对话中记住这些信息。"
+        })

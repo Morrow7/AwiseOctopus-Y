@@ -4,6 +4,7 @@ import os
 import base64
 import time
 import atexit
+import threading
 
 class AOLocalSandbox:
     """
@@ -16,6 +17,8 @@ class AOLocalSandbox:
     def __init__(self, use_docker=None, **kwargs):
         self.runner_path = os.path.join(os.path.dirname(__file__), 'runner.py')
         self.process = None
+        self._lock = threading.Lock()
+
         
         if use_docker is None:
             # Auto-detect docker
@@ -73,25 +76,26 @@ class AOLocalSandbox:
         if not self.process or self.process.poll() is not None:
             return "Sandbox process is not running or has crashed."
 
-        try:
-            # Encode code to base64 to avoid newline and buffering issues
-            encoded_code = base64.b64encode(code.encode('utf-8')).decode('utf-8')
-            
-            # Send to process
-            self.process.stdin.write(encoded_code + "\n")
-            self.process.stdin.flush()
-            
-            # Read result
-            result_line = self.process.stdout.readline()
-            
-            if not result_line:
-                return "Failed to read from sandbox process. Process might have crashed."
-            
-            # Decode result
-            decoded_result = base64.b64decode(result_line.strip()).decode('utf-8')
-            return decoded_result
-        except Exception as e:
-            return f"Sandbox communication error: {e}"
+        with self._lock:
+            try:
+                # Encode code to base64 to avoid newline and buffering issues
+                encoded_code = base64.b64encode(code.encode('utf-8')).decode('utf-8')
+                
+                # Send to process
+                self.process.stdin.write(encoded_code + "\n")
+                self.process.stdin.flush()
+                
+                # Read result
+                result_line = self.process.stdout.readline()
+                
+                if not result_line:
+                    return "Failed to read from sandbox process. Process might have crashed."
+                
+                # Decode result
+                decoded_result = base64.b64decode(result_line.strip()).decode('utf-8')
+                return decoded_result
+            except Exception as e:
+                return f"Sandbox communication error: {e}"
 
     def close(self):
         """

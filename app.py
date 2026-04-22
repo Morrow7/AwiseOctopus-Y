@@ -38,6 +38,9 @@ if __name__ == "__main__":
     print("输入 'exit' 退出。")
     print("------------------------------------------")
     
+    # 实例化持久的 ThinkingAgent 维持多轮上下文
+    manager = ThinkingAgent(client, MODEL)
+    
     while True:
         try:
             prompt = input("\n请输入问题：")
@@ -46,7 +49,6 @@ if __name__ == "__main__":
             if not prompt.strip():
                 continue
             
-            manager = ThinkingAgent(client, MODEL)
             final_response = manager.run(prompt)
             
             if isinstance(final_response, list):

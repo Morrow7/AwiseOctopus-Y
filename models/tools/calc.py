@@ -13,6 +13,12 @@ from .registry import registry
 )
 def calc(expression):
     try:
-        return str(eval(expression))
+        # 使用受限的命名空间进行 eval，防止执行任意恶意代码
+        allowed_names = {
+            "__builtins__": {},
+            "abs": abs, "round": round, "min": min, "max": max,
+            "int": int, "float": float
+        }
+        return str(eval(expression, allowed_names, {}))
     except Exception as e:
         return f"Error evaluating expression: {e}"

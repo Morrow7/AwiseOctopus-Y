@@ -66,6 +66,10 @@ if "summary_text" not in st.session_state:
 if "summary_generator" not in st.session_state:
     st.session_state.summary_generator = None
 
+if "agent" not in st.session_state:
+    # 实例化持久的 ThinkingAgent 维持多轮上下文
+    st.session_state.agent = ThinkingAgent(client, MODEL)
+
 # -----------------
 # 渲染历史消息
 # -----------------
@@ -102,7 +106,7 @@ if prompt := st.chat_input("Please enter a question or reply to the agent's requ
     
     # 判断是新任务还是回复 Agent 求助
     if st.session_state.agent_gen is None:
-        agent = ThinkingAgent(client, MODEL)
+        agent = st.session_state.agent
         st.session_state.agent_gen = agent.run_stream(prompt)
         st.session_state.logs = []
     else:
@@ -286,7 +290,7 @@ if st.session_state.dag_running or st.session_state.dag_results is not None:
         })
         
         # 准备生成总结
-        agent = ThinkingAgent(client, MODEL)
+        agent = st.session_state.agent
         st.session_state.summary_generator = agent.summarize_dag_results_stream(st.session_state.dag_prompt, st.session_state.dag_results)
         st.session_state.summary_text = ""
         st.rerun()

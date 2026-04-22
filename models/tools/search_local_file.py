@@ -1,11 +1,14 @@
 import os
 import sys
 import ctypes
+import threading
 from .registry import registry
 
 # 全局变量缓存 Everything SDK 库
 _everything_dll = None
 _dll_load_error = None
+_everything_lock = threading.Lock()
+
 
 def _load_everything_dll():
     global _everything_dll, _dll_load_error
@@ -76,35 +79,37 @@ def search_local_file(keyword, max_results=10):
         return _dll_load_error
 
     try:
-        # 1. 设置搜索词
-        dll.Everything_SetSearchW(keyword)
-        
-        # 2. 设置最大返回数
-        dll.Everything_SetMax(int(max_results))
-        
-        # 3. 执行同步查询
-        # 参数 1 表示 bWait=True (等待查询完成)
-        success = dll.Everything_QueryW(1)
-        if not success:
-            err_code = dll.Everything_GetLastError()
-            if err_code == 2: # EVERYTHING_ERROR_IPC
-                return "Everything 搜索失败: Everything 客户端未运行。请确保本地已启动 Everything 软件。"
-            return f"Everything 搜索失败，错误代码: {err_code}"
+        # 使用锁确保对 DLL 全局状态的修改是线程安全的
+        with _everything_lock:
+            # 1. 设置搜索词
+            dll.Everything_SetSearchW(keyword)
             
-        # 4. 获取结果数量
-        num_results = dll.Everything_GetNumResults()
-        if num_results == 0:
-            return f"未找到与 '{keyword}' 匹配的文件或目录。"
+            # 2. 设置最大返回数
+            dll.Everything_SetMax(int(max_results))
             
-        # 5. 遍历并获取结果路径
-        results = []
-        # Windows MAX_PATH 通常为 260，但为了支持长路径使用 32768
-        buf = ctypes.create_unicode_buffer(32768)
-        
-        for i in range(num_results):
-            dll.Everything_GetResultFullPathNameW(i, buf, len(buf))
-            results.append(buf.value)
+            # 3. 执行同步查询
+            # 参数 1 表示 bWait=True (等待查询完成)
+            success = dll.Everything_QueryW(1)
+            if not success:
+                err_code = dll.Everything_GetLastError()
+                if err_code == 2: # EVERYTHING_ERROR_IPC
+                    return "Everything 搜索失败: Everything 客户端未运行。请确保本地已启动 Everything 软件。"
+                return f"Everything 搜索失败，错误代码: {err_code}"
+                
+            # 4. 获取结果数量
+            num_results = dll.Everything_GetNumResults()
+            if num_results == 0:
+                return f"未找到与 '{keyword}' 匹配的文件或目录。"
+                
+            # 5. 遍历并获取结果路径
+            results = []
+            # Windows MAX_PATH 通常为 260，但为了支持长路径使用 32768
+            buf = ctypes.create_unicode_buffer(32768)
             
+            for i in range(num_results):
+                dll.Everything_GetResultFullPathNameW(i, buf, len(buf))
+                results.append(buf.value)
+                
         # 6. 格式化输出
         output = f"找到 {num_results} 个匹配项 (限制最多显示 {max_results} 个):\n"
         for idx, path in enumerate(results, 1):
