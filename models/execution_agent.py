@@ -1,11 +1,13 @@
 import json
 from .tools import registry
+from .experience_memory import ExperienceMemoryManager, evaluate_experience
 
 class ExecutionAgent:
     def __init__(self, client, model, interaction_handler=None):
         self.client = client
         self.model = model
         self.interaction_handler = interaction_handler
+        self.memory_manager = ExperienceMemoryManager()
         self.system_prompt = (
             "你是一个执行Agent（Worker）。你的任务是利用手头的技能工具，精准地完成思考Agent交给你的具体任务指令。\n"
             "遇到问题时，请自行分析并再次尝试。一旦你完成了任务，请直接用普通文本回答最终结果，不要返回额外的内容。\n"
@@ -15,10 +17,19 @@ class ExecutionAgent:
 
     def run_stream(self, instruction):
         yield f"  >>> [执行Agent 启动] 接收到子任务: {instruction}"
+        
         messages = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": instruction}
         ]
+        
+        # 搜索历史经验
+        hint = self.memory_manager.search_experience("execution", instruction)
+        if hint:
+            yield f"  >>> [执行Agent 经验记忆] 检索到相关历史经验，已注入上下文。"
+            messages[0]["content"] += f"\n\n{hint}"
+            
+        process_log = []
         
         while True:
             response = self.client.chat.completions.create(
@@ -59,6 +70,7 @@ class ExecutionAgent:
                         result = registry.execute(name, args)
                     
                     yield f"    - [执行Agent 技能返回结果] {result}"
+                    process_log.append(f"Call {name}({args}) -> Result: {result}")
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
@@ -68,6 +80,14 @@ class ExecutionAgent:
             else:
                 final_result = msg.content
                 yield f"  <<< [执行Agent 完成] 结果反馈: {final_result}"
+                
+                # 记录经验
+                yield f"  >>> [执行Agent 经验记忆] 正在反思执行结果并记录经验..."
+                process_log_str = "\n".join(process_log)
+                score = evaluate_experience(self.client, self.model, instruction, process_log_str, final_result)
+                self.memory_manager.add_experience("execution", instruction, process_log_str, final_result, score)
+                yield f"  >>> [执行Agent 经验记忆] 经验已记录 (得分: {score})"
+                
                 return final_result
 
     def run(self, instruction):

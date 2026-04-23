@@ -3,6 +3,7 @@ import os
 import jsonschema
 from .execution_agent import ExecutionAgent
 from .tools import registry
+from .experience_memory import ExperienceMemoryManager, evaluate_experience
 
 def _validate_dag_tasks(tasks, schema):
     """
@@ -150,6 +151,7 @@ class ThinkingAgent:
     def __init__(self, client, model):
         self.client = client
         self.model = model
+        self.memory_manager = ExperienceMemoryManager()
         
         execution_tools_info = json.dumps(registry.schemas, ensure_ascii=False)
         self.system_prompt = (
@@ -164,6 +166,9 @@ class ThinkingAgent:
             "当某一个探索任务或方法多次失败、无法获得预期结果（例如网络搜索失败、计算出错等）时，你必须**主动修正思考方向**。\n"
             "一种非常有效的替代方案是：**让执行Agent通过编写并运行Python代码（使用其内置的 python_eval 工具）来完成任务**。例如通过Python去请求API、爬取网页、处理复杂逻辑等。\n"
             "如果各种方法都尝试失败，或者你对如何规划有严重疑虑时，请**使用 `ask_user_for_help` 工具向用户提问**。特别地，对于**模糊不清的需求目标等信息**，你必须**整理出可能的方向后由用户选择**，切勿自行猜测。\n"
+            "\n【关于DAG校验失败的强制要求】\n"
+            "如果你在调用 `create_task` 时收到校验失败（validation error）的反馈，你必须仔细检查错误信息并**修复 DAG 的结构异常**，然后重新调用 `create_task`。\n"
+            "**绝对不允许**因为 DAG 校验失败就直接放弃规划，转而使用 `execute_subtask` 绕过校验去执行任务！\n"
             "\n【阶段二：输出DAG任务执行图】\n"
             "当你的思考和信息收集完成，并明确了所有需要执行的步骤后，必须使用 `create_task` 工具输出整个DAG任务执行图。\n"
             "在DAG图中，你需要将任务进行**细致的拆分**，支持两种任务节点类型：\n"
@@ -305,7 +310,15 @@ class ThinkingAgent:
         
     def run_stream(self, user_request):
         yield ("RUNNING", "\n=== [思考Agent 启动] 开始分析任务 ===")
-        self.messages.append({"role": "user", "content": user_request})
+        
+        # 搜索历史经验
+        hint = self.memory_manager.search_experience("thinking", user_request)
+        if hint:
+            yield ("RUNNING", "\n[思考Agent 经验记忆] 检索到相关历史经验，已注入上下文。")
+            user_request_with_hint = f"{user_request}\n\n{hint}"
+            self.messages.append({"role": "user", "content": user_request_with_hint})
+        else:
+            self.messages.append({"role": "user", "content": user_request})
         
         while True:
             response = self.client.chat.completions.create(
@@ -382,7 +395,7 @@ class ThinkingAgent:
                                 "role": "tool",
                                 "tool_call_id": tool_call.id,
                                 "name": name,
-                                "content": f"Failed to create task due to validation error: {error_msg}. Please fix the error and try again."
+                                "content": f"Failed to create task due to validation error: {error_msg}. 你必须修复这个 DAG 图的异常并重新调用 `create_task`，绝对不允许直接转而使用 `execute_subtask` 或其他工具来绕过此校验。"
                             })
                             continue
                             
@@ -421,6 +434,13 @@ class ThinkingAgent:
                             "name": name,
                             "content": f"任务已完成，最终回复: {final_answer}"
                         })
+                        
+                        # 记录经验 (直接完成类型任务)
+                        yield ("RUNNING", "\n[思考Agent 经验记忆] 正在反思执行结果并记录经验...")
+                        process_log_str = "Direct finish without DAG."
+                        score = evaluate_experience(self.client, self.model, user_request, process_log_str, final_answer)
+                        self.memory_manager.add_experience("thinking", user_request, process_log_str, final_answer, score)
+                        yield ("RUNNING", f"\n[思考Agent 经验记忆] 经验已记录 (得分: {score})")
                         
                         final_return_status = "FINISHED"
                         final_return_payload = final_answer
@@ -497,6 +517,13 @@ class ThinkingAgent:
                 content = chunk.choices[0].delta.content
                 summary_text += content
                 yield content
+        
+        # 当流式输出结束后，记录完整的 DAG 经验
+        yield "\n\n[思考Agent 经验记忆] 正在反思执行结果并记录经验...\n"
+        process_log_str = json.dumps(dag_results, ensure_ascii=False)
+        score = evaluate_experience(self.client, self.model, user_request, process_log_str, summary_text)
+        self.memory_manager.add_experience("thinking", user_request, process_log_str, summary_text, score)
+        yield f"[思考Agent 经验记忆] 经验已记录 (得分: {score})\n"
                 
         # 注入总结结果到思考 Agent 的上下文中
         self.messages.append({
