@@ -22,7 +22,8 @@ def _interaction_handler(console, tool_name: str, args: dict) -> str:
         )
     )
     console.print(JSON.from_data(args))
-    return Prompt.ask("是否允许？输入 y 允许，或输入修改建议/拒绝原因", default="n")
+    console.print("\n[red]*[/red] 是否允许？输入 y 允许，或输入修改建议/拒绝原因 (默认: n):")
+    return console.input("[bold cyan]>[/bold cyan] ").strip() or "n"
 
 
 def _ensure_api_key(ctx) -> str:
@@ -57,7 +58,8 @@ def _consume_run_stream(console, gen, *, allow_interaction: bool):
                 raise click.ClickException(
                     "Agent 需要用户输入，但当前为非交互模式。请改用 `chat` 或在交互终端中运行。"
                 )
-            user_input_to_send = Prompt.ask("请输入回复")
+            console.print("\n[red]*[/red] 请输入回复:")
+            user_input_to_send = console.input("[bold cyan]>[/bold cyan] ")
             continue
 
         if status == "FINISHED":

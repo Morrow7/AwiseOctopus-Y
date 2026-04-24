@@ -33,17 +33,40 @@ def cli_interaction_handler(tool_name, args):
 # 主循环
 # -----------------
 if __name__ == "__main__":
-    print("------------------------------------------")
-    print("双Agent架构测试系统已启动")
-    print("输入 'exit' 退出。")
-    print("------------------------------------------")
+    import shutil
+    
+    # 终端宽度铺满标题
+    terminal_width = shutil.get_terminal_size().columns
+    title = " 双Agent架构测试系统 "
+    print(title.center(terminal_width, "="))
+    
+    # 剑盾 ASCII Art
+    sword_shield = """
+          / \\
+        /_____\\
+       |       |
+  O===[=========]==============-
+       |       |
+        \\     /
+         \\   /
+          \\ /
+    """
+    for line in sword_shield.strip("\n").split("\n"):
+        print(line.center(terminal_width))
+        
+    print()
+    print(f"[*] 模型 (MODEL): {MODEL}")
+    print(f"[*] 接口 (API)  : {base_url}")
+    print("[*] 提示 (HINT) : 输入 'exit' 退出程序，按 Ctrl+C 中断。")
+    print("=" * terminal_width)
     
     # 实例化持久的 ThinkingAgent 维持多轮上下文
     manager = ThinkingAgent(client, MODEL)
     
     while True:
         try:
-            prompt = input("\n请输入问题：")
+            print("\n\033[91m*\033[0m 请输入问题：")
+            prompt = input("> ")
             if prompt.strip().lower() == "exit":
                 break
             if not prompt.strip():
